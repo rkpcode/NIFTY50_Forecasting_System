@@ -17,7 +17,7 @@ class PredictionPipeline:
             self.scaler_path = os.path.join("artifacts", "preprocessor.pkl")
             
             logging.info(f"Loading model from {self.model_path}")
-            self.model = tf.keras.models.load_model(self.model_path)
+            self.model = tf.keras.models.load_model(self.model_path, compile=False)
             
             logging.info(f"Loading scaler from {self.scaler_path}")
             self.scaler = joblib.load(self.scaler_path)
@@ -47,22 +47,45 @@ class PredictionPipeline:
             # For inference, if we just want the *next* step prediction based on the *last* window,
             # we need to ensure we have the most recent data populated.
             
+            # 2. Add Lag Features (replicating DataTransformation defaults)
+            lag_cols = ["Close"]
+            lags = [1, 2, 3, 5]
+            df_processed = self.data_transformation.create_lag_features(df_processed, lag_cols, lags)
+
             # Reconstruct the feature list used in training
-            # This must match exactly what was defined in DataTransformation.initiate_data_transformation
-            # For robustness, we should ideally save the feature names list in the artifacts.
-            # For now, I will manually reconstruct the standard list used.
+            # Order matters! It must match the training feature order.
             
-            required_features = ["Close", "Open", "High", "Low", "Volume",
-                                 "SMA_7", "SMA_21", "EMA_12", "EMA_26", "MACD", 
-                                 "RSI_14", "daily_return", "log_return"]
+            # Base features
+            feature_cols = ["Close", "Open", "High", "Low", "Volume"]
             
-            # Filtering existing columns
-            final_features = [f for f in required_features if f in df_processed.columns]
+            # Indicators
+            indicators = ["SMA_7", "SMA_21", "EMA_12", "EMA_26", "MACD", "RSI_14", "daily_return", "log_return"]
             
+            final_features = feature_cols + indicators
+            
+            # Lags
+            for c in lag_cols:
+                for lag in lags:
+                    final_features.append(f"{c}_lag{lag}")
+            
+            # Filter to keep only what's in df_processed
+            final_features = [f for f in final_features if f in df_processed.columns]
+            
+            # Ensure Close is first if not already (logic from DataTransformation)
+            if "Close" in final_features and final_features[0] != "Close":
+                final_features.remove("Close")
+                final_features.insert(0, "Close")
+            
+            logging.info(f"Using features for prediction: {final_features}")
+
             if "Close" not in final_features:
                  raise ValueError("Close price missing from features")
 
             # Check if we have enough data for the sequence
+            # We need enough history for lags + window
+            # But create_lag_features handles NaNs (backfill/ffill).
+            # We just need enough rows for the window.
+            
             if len(df_processed) < in_len:
                 raise ValueError(f"Not enough data points. Need at least {in_len} rows, got {len(df_processed)}")
             
