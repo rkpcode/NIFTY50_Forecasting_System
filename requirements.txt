@@ -1,0 +1,16 @@
+numpy
+pandas
+scikit-learn
+mysql-connector-python
+PyMySQL
+matplotlib
+seaborn
+flask
+catboost
+xgboost
+MLflow
+dagshub
+evidently
+yfinance
+tensorflow
+streamlit
