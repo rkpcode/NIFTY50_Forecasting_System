@@ -1,20 +1,21 @@
 ---
-title: Nifty50 Forecaster
-emoji: 🚀
-colorFrom: red
-colorTo: red
-sdk: docker
-app_port: 8501
-tags:
-- streamlit
+title: NIFTY 50 Forecasting System
+emoji: 📈
+colorFrom: blue
+colorTo: green
+sdk: streamlit
+sdk_version: 1.28.0
+app_file: app.py
 pinned: false
-short_description: Streamlit template space
 license: mit
 ---
 
-# Welcome to Streamlit!
+# 📈 NIFTY 50 Forecasting System
 
-Edit `/src/streamlit_app.py` to customize this app to your heart's desire. :heart:
+AI-powered forecasting system for predicting NIFTY 50 stock prices for the next 7 days.
 
-If you have any questions, checkout our [documentation](https://docs.streamlit.io) and [community
-forums](https://discuss.streamlit.io).
+## Features
+
+- **Live Data**: Fetches real-time NIFTY 50 data using `yfinance`
+- **7-Day Forecast**: Predicts next 7 days of stock prices
+```
