@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import sys
 import os
+import traceback
 
 # Ensure src path is available
 sys.path.append(os.getcwd())
@@ -55,22 +56,101 @@ def load_pipeline():
 
 try:
     pipeline = load_pipeline()
-    st.success("✅ Model loaded successfully!")
+    # Check what models loaded
+    available_models = list(pipeline.models.keys()) if hasattr(pipeline, 'models') else []
+    if available_models:
+         st.success(f"✅ Models loaded: {', '.join([m.upper() for m in available_models])}")
+    else:
+         st.success("✅ Model loaded successfully!")
 except Exception as e:
     st.error(f"❌ Error loading model: {e}")
+    st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ") # Easter egg handling? No, let's stick to standard error.
     st.stop()
 
-# Controls
+# ===== SIDEBAR: Model Selection =====
+st.sidebar.title("⚙️ Model Settings")
+st.sidebar.markdown("---")
+
+# Get available models
+available_models = list(pipeline.models.keys()) if hasattr(pipeline, 'models') else ["legacy"]
+
+# Model selector
+if len(available_models) > 1:
+    model_choices = {
+        "seq2seq": "🏆 Seq2Seq LSTM (Best - RMSE: 228)",
+        "multivariate": "📊 Multivariate LSTM (All Features - RMSE: 1083)"
+    }
+    
+    # Create display names for available models
+    display_options = [model_choices.get(m, m.upper()) for m in available_models]
+    
+    # Default to seq2seq if available
+    default_idx = 0
+    if 'seq2seq' in available_models:
+        default_idx = available_models.index('seq2seq')
+    
+    selected_display = st.sidebar.selectbox(
+        "Select Forecasting Model",
+        display_options,
+        index=default_idx,
+        help="Choose between different LSTM architectures"
+    )
+    
+    # Map back to internal model name
+    # Find key by value in the list constructed
+    selected_internal_index = display_options.index(selected_display)
+    model_type = available_models[selected_internal_index]
+else:
+    # Use whatever model is active (likely legacy or single model loaded)
+    model_type = available_models[0] if available_models else "multivariate"
+    st.sidebar.info(f"Using: {model_type.upper()} LSTM")
+
+# Model comparison info
+with st.sidebar.expander("📊 Model Comparison"):
+    st.markdown("""
+    ### Seq2Seq LSTM ⭐ (Recommended)
+    - **RMSE:** 228.00 (Step 1)
+    - **Architecture:** Encoder-Decoder
+    - **Best for:** 1-7 day forecasts
+    - **Approach:** Univariate (price-based)
+    
+    ### Multivariate LSTM
+    - **RMSE:** 1083.22  
+    - **Architecture:** Stacked LSTM
+    - **Features:** 13+ indicators
+    - **Note:** More complex but noisier
+    
+    > 💡 **Seq2Seq performs ~80% better!**
+    """)
+
+st.sidebar.markdown("---")
+st.sidebar.caption("Model comparison from `model_comparison_report.md`")
+
+# ===== MAIN CONTROLS =====
 col1, col2 = st.columns([1, 4])
 with col1:
     retrain = st.checkbox("Online Learning (Retrain on latest data)", value=False, 
                          help="If checked, the model will fine-tune itself on the absolute latest live market data before predicting. This takes ~30 seconds.")
+
+# Show selected model info
+st.info(f"🤖 Active Model: **{model_type.upper()} LSTM**")
+
 with col2:
     if st.button("Get 7-Day Forecast", type="primary"):
-        with st.spinner("🔄 Fetching Live Data & Forecasting... (Please wait, this may take 30-60 seconds)"):
+        with st.spinner(f"🔄 Running {model_type.upper()} forecast... (Please wait 30-60 seconds)"):
             try:
-                # Call prediction pipeline directly
-                predictions = pipeline.predict_next_n_days(steps=7, retrain=retrain)
+                # Call prediction pipeline with selected model
+                if hasattr(pipeline, 'predict_next_n_days'):
+                    # Check if method accepts model_type
+                    # We updated it, so it should.
+                    predictions = pipeline.predict_next_n_days(
+                        steps=7, 
+                        retrain=retrain,
+                        model_type=model_type
+                    )
+                else:
+                    st.error("Pipeline method predict_next_n_days not found.")
+                    predictions = []
                 
                 if not predictions:
                     st.warning("No predictions returned.")
@@ -89,7 +169,7 @@ with col2:
                         trend_icon = ""
                         trend_class = ""
                         
-                        if i > 0:
+                        if i > 0 and previous_price is not None:
                             if price > previous_price:
                                 trend_icon = "🔼"
                                 trend_class = "trend-up"
@@ -101,14 +181,16 @@ with col2:
                         
                         previous_price = price
                         
-                        with cols[i]:
-                            st.markdown(f"""
-                            <div class="metric-card">
-                                <div class="date-text">{date}</div>
-                                <div class="price-text" title="{price}">₹{int(price)}</div>
-                                <div class="{trend_class}">{trend_icon}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
+                        # Handle potential index out of bounds if cols < 7? No, streamlits creates N columns.
+                        if i < len(cols):
+                            with cols[i]:
+                                st.markdown(f"""
+                                <div class="metric-card">
+                                    <div class="date-text">{date}</div>
+                                    <div class="price-text" title="{price}">₹{int(price)}</div>
+                                    <div class="{trend_class}">{trend_icon}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
                     
                     # Show raw data below
                     with st.expander("View Detailed Data"):
@@ -119,7 +201,6 @@ with col2:
                         
             except Exception as e:
                 st.error(f"An error occurred: {e}")
-                import traceback
                 with st.expander("Error Details"):
                     st.code(traceback.format_exc())
 

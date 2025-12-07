@@ -15,17 +15,57 @@ from src.nifty50_forecasting_system.components.data_transformation import DataTr
 class PredictionPipeline:
     def __init__(self):
         try:
-            # Hardcoded paths matching training artifacts
-            self.model_path = os.path.join("artifacts", "model.h5")
+            # Dual Model Support - Load both models
+            self.multivariate_model_path = os.path.join("artifacts", "model_multivariate.h5")
+            self.seq2seq_model_path = os.path.join("artifacts", "model_seq2seq.h5")
             self.scaler_path = os.path.join("artifacts", "preprocessor.pkl")
             
-            logging.info(f"Loading model from {self.model_path}")
-            self.model = tf.keras.models.load_model(self.model_path, compile=False)
+            logging.info("=" * 60)
+            logging.info("Loading Dual LSTM Models (Multivariate + Seq2Seq)")
+            logging.info("=" * 60)
             
+            # Try to load both models - fallback gracefully if one fails
+            self.models = {}
+            
+            # Load Multivariate Model
+            if os.path.exists(self.multivariate_model_path):
+                logging.info(f"Loading Multivariate model from {self.multivariate_model_path}")
+                self.models['multivariate'] = tf.keras.models.load_model(
+                    self.multivariate_model_path, compile=False
+                )
+                logging.info("✓ Multivariate LSTM loaded successfully")
+            else:
+                logging.warning(f"Multivariate model not found at {self.multivariate_model_path}")
+            
+            # Load Seq2Seq Model
+            if os.path.exists(self.seq2seq_model_path):
+                logging.info(f"Loading Seq2Seq model from {self.seq2seq_model_path}")
+                self.models['seq2seq'] = tf.keras.models.load_model(
+                    self.seq2seq_model_path, compile=False
+                )
+                logging.info("✓ Seq2Seq LSTM loaded successfully")
+            else:
+                logging.warning(f"Seq2Seq model not found at {self.seq2seq_model_path}")
+            
+            # Fallback: Load legacy single model if no new models found
+            if not self.models:
+                legacy_model_path = os.path.join("artifacts", "model.h5")
+                if os.path.exists(legacy_model_path):
+                    logging.warning("Loading legacy model.h5 as fallback")
+                    self.models['multivariate'] = tf.keras.models.load_model(
+                        legacy_model_path, compile=False
+                    )
+                else:
+                    raise FileNotFoundError("No models found! Please train models first.")
+            
+            # Load Scaler
             logging.info(f"Loading scaler from {self.scaler_path}")
             self.scaler = joblib.load(self.scaler_path)
             
             self.data_transformation = DataTransformation()
+            
+            logging.info(f"Available models: {list(self.models.keys())}")
+            logging.info("=" * 60)
             
         except Exception as e:
             raise CustomException(e, sys)
@@ -249,17 +289,37 @@ class PredictionPipeline:
             logging.exception("Error in refit_and_update")
             raise CustomException(e, sys)
 
-    def predict_next_n_days(self, steps: int = 7, retrain: bool = False):
+    def predict_next_n_days(self, steps: int = 7, retrain: bool = False, model_type: str = "seq2seq"):
         """
         Fetches live data and predicts the next n days recursively.
         Optionally retrains the model on latest data before predicting.
         Falls back to demo predictions if everything fails (for cloud deployment).
+        
+        Args:
+            steps: Number of days to forecast (default: 7)
+            retrain: Whether to fine-tune model on latest data before prediction
+            model_type: "seq2seq" or "multivariate" (default: "seq2seq" - best performer)
         """
         try:
+            # Validate and select model
+            if model_type not in self.models:
+                available = list(self.models.keys())
+                if 'seq2seq' in available:
+                    logging.warning(f"Model type '{model_type}' not found. Falling back to 'seq2seq'")
+                    model_type = 'seq2seq'
+                elif 'multivariate' in available:
+                    logging.warning(f"Model type '{model_type}' not found. Falling back to 'multivariate'")
+                    model_type = 'multivariate'
+                else:
+                    raise ValueError(f"No valid models available. Loaded models: {available}")
+            
+            selected_model = self.models[model_type]
+            logging.info(f"Using model: {model_type.upper()} LSTM")
+            
             if retrain:
                 logging.info("Retraining requested, attempting to fetch live data...")
                 try:
-                    self.refit_and_update(epochs=5)
+                    self.refit_and_update(epochs=5, model_type=model_type)
                 except Exception as retrain_error:
                     logging.warning(f"Retraining failed (likely due to yfinance restrictions in cloud): {retrain_error}")
                     logging.info("Continuing with existing model without retraining...")
