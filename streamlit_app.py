@@ -1,74 +1,122 @@
-
 import streamlit as st
 import pandas as pd
-import numpy as np
-import os
-import sys
+import requests
+import time
 
-# Ensure src path is available
-sys.path.append(os.getcwd())
+st.set_page_config(page_title="NIFTY 50 Wise", layout="wide", page_icon="📈")
 
-from src.nifty50_forecasting_system.pipelines.prediction_pipeline import PredictionPipeline
+# Custom CSS for "Weather Card" look
+st.markdown("""
+<style>
+    .metric-card {
+        background-color: #1e1e1e;
+        padding: 20px;
+        border-radius: 10px;
+        border: 1px solid #333;
+        text-align: center;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        transition: transform 0.2s;
+    }
+    .metric-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+    }
+    .date-text {
+        color: #888;
+        font-size: 0.9em;
+        margin-bottom: 5px;
+    }
+    .price-text {
+        font-size: 1.8em;
+        font-weight: bold;
+        color: #fff;
+    }
+    .trend-up {
+        color: #00ff7f;
+    }
+    .trend-down {
+        color: #ff4b4b;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-st.set_page_config(page_title="NIFTY 50 Forecasting", layout="wide")
+st.title("📈 NIFTY 50 Forecasting System")
+st.markdown("### Next 7 Days Prediction (AI Powered)")
 
-st.title("📈 NIFTY 50 Stock Price Forecasting")
-st.markdown("This dashboard uses an **LSTM Deep Learning Model** to forecast the next day's Close price based on historical data.")
-
-# Initialize pipeline
-@st.cache_resource
-def load_pipeline():
-    return PredictionPipeline()
-
-try:
-    pipeline = load_pipeline()
-    st.success("Model loaded successfully!")
-except Exception as e:
-    st.error(f"Error loading model: {e}")
-    st.stop()
-
-# Sidebar for input
-st.sidebar.header("Input Data")
-
-data_source = st.sidebar.radio("Select Data Source", ("Upload CSV", "Use Dummy Data"))
-
-df = None
-
-if data_source == "Upload CSV":
-    uploaded_file = st.sidebar.file_uploader("Upload CSV (must contain Open, High, Low, Close, Volume)", type=["csv"])
-    if uploaded_file is not None:
-        df = pd.read_csv(uploaded_file)
-elif data_source == "Use Dummy Data":
-    st.sidebar.info("Using auto-generated dummy data for demonstration.")
-    dummy_path = "artifacts/dummy_train.csv"
-    if os.path.exists(dummy_path):
-        df = pd.read_csv(dummy_path)
-    else:
-        st.warning("Dummy data not found. Please upload a file.")
-
-if df is not None:
-    st.subheader("Historical Data Preview")
-    st.dataframe(df.tail(10))
-    
-    st.subheader("Price History")
-    if "Date" in df.columns:
-        df["Date"] = pd.to_datetime(df["Date"])
-        df = df.sort_values("Date")
-        st.line_chart(df.set_index("Date")["Close"])
-    else:
-        st.line_chart(df["Close"])
-
-    if st.button("Forecast Next Day Price"):
-        with st.spinner("Calculating Technical Indicators & Forecasting..."):
+# Controls
+col1, col2 = st.columns([1, 4])
+with col1:
+    retrain = st.checkbox("Online Learning (Retrain on latest data)", value=True, help="If checked, the model will fine-tune itself on the absolute latest live market data before predicting.")
+with col2:
+    if st.button("Get 7-Day Forecast", type="primary"):
+        with st.spinner("Fetching Live Data & Forecasting... (This may take a moment if Online Learning is active)"):
             try:
-                # Ensure date column doesn't break logic if passed features don't need it or need it
-                # PredictionPipeline expects DataFrame. data_transformation adds Date logic if present.
+                # Call Flask API
+                api_url = "http://127.0.0.1:5000/predict_live"
+                payload = {"retrain": retrain}
                 
-                prediction = pipeline.predict(df)
+                response = requests.post(api_url, json=payload)
                 
-                st.metric(label="Predicted Close Price", value=f"₹ {prediction:.2f}")
-                
+                if response.status_code == 200:
+                    data = response.json()
+                    predictions = data.get("predictions", [])
+                    
+                    if not predictions:
+                        st.warning("No predictions returned.")
+                    else:
+                        st.subheader("7-Day Forecast")
+                        
+                        # Display cards
+                        cols = st.columns(7)
+                        
+                        previous_price = None # To calculate trend 
+                        
+                        for i, day_pred in enumerate(predictions):
+                            date = day_pred["Date"]
+                            price = day_pred["Price"]
+                            
+                            # Determine trend if we have previous price (from index 0 we rely on ... wait, index 0 is tomorrow. 
+                            # We can't know today's close easily unless passed. 
+                            # We'll compare day i to day i-1. For i=0, just show neutral or no trend icon).
+                            
+                            trend_icon = ""
+                            trend_class = ""
+                            
+                            if i > 0:
+                                if price > previous_price:
+                                    trend_icon = "🔼"
+                                    trend_class = "trend-up"
+                                elif price < previous_price:
+                                    trend_icon = "🔽"
+                                    trend_class = "trend-down"
+                                else:
+                                    trend_icon = "➖"
+                            
+                            previous_price = price
+                            
+                            with cols[i]:
+                                st.markdown(f"""
+                                <div class="metric-card">
+                                    <div class="date-text">{date}</div>
+                                    <div class="price-text" title="{price}">₹{int(price)}</div>
+                                    <div class="{trend_class}">{trend_icon}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                        
+                        # Show raw data below
+                        with st.expander("View Detailed Data"):
+                            st.dataframe(pd.DataFrame(predictions))
+                            
+                        if data.get("retrained"):
+                            st.success("✅ Model successfully updated with latest market data!")
+                            
+                else:
+                    st.error(f"API Error: {response.text}")
+                    
+            except requests.exceptions.ConnectionError:
+                st.error("Could not connect to the Backend API. Is 'python app.py' running?")
             except Exception as e:
-                st.error(f"Prediction Failed: {e}")
-else:
-    st.info("Please upload a CSV file or ensure dummy data exists to proceed.")
+                st.error(f"An unexpected error occurred: {e}")
+
+st.markdown("---")
+st.markdown("*Disclaimer: This is an AI generic model. Do not use for actual trading.*")

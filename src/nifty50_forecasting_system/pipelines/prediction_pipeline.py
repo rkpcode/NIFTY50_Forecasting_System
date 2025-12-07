@@ -5,6 +5,9 @@ import pandas as pd
 import numpy as np
 import joblib
 import tensorflow as tf
+import tensorflow as tf
+import yfinance as yf
+from datetime import timedelta
 from src.nifty50_forecasting_system.exception import CustomException
 from src.nifty50_forecasting_system.logger import logging
 from src.nifty50_forecasting_system.components.data_transformation import DataTransformation
@@ -53,28 +56,9 @@ class PredictionPipeline:
             df_processed = self.data_transformation.create_lag_features(df_processed, lag_cols, lags)
 
             # Reconstruct the feature list used in training
-            # Order matters! It must match the training feature order.
+            final_features = self.get_final_feature_names(df_processed, lag_cols, lags)
             
-            # Base features
-            feature_cols = ["Close", "Open", "High", "Low", "Volume"]
-            
-            # Indicators
-            indicators = ["SMA_7", "SMA_21", "EMA_12", "EMA_26", "MACD", "RSI_14", "daily_return", "log_return"]
-            
-            final_features = feature_cols + indicators
-            
-            # Lags
-            for c in lag_cols:
-                for lag in lags:
-                    final_features.append(f"{c}_lag{lag}")
-            
-            # Filter to keep only what's in df_processed
-            final_features = [f for f in final_features if f in df_processed.columns]
-            
-            # Ensure Close is first if not already (logic from DataTransformation)
-            if "Close" in final_features and final_features[0] != "Close":
-                final_features.remove("Close")
-                final_features.insert(0, "Close")
+            logging.info(f"Using features for prediction: {final_features}")
             
             logging.info(f"Using features for prediction: {final_features}")
 
@@ -119,6 +103,178 @@ class PredictionPipeline:
             
             logging.info(f"Prediction result: {predicted_price}")
             return predicted_price
+
+        except Exception as e:
+            raise CustomException(e, sys)
+
+    def get_final_feature_names(self, df_processed: pd.DataFrame, lag_cols=["Close"], lags=[1, 2, 3, 5]):
+        """
+        Helper to reconstruct the exact feature order used in training.
+        """
+        # Base features
+        feature_cols = ["Close", "Open", "High", "Low", "Volume"]
+        
+        # Indicators
+        indicators = ["SMA_7", "SMA_21", "EMA_12", "EMA_26", "MACD", "RSI_14", "daily_return", "log_return"]
+        
+        final_features = feature_cols + indicators
+        
+        # Lags
+        for c in lag_cols:
+            for lag in lags:
+                final_features.append(f"{c}_lag{lag}")
+        
+        # Filter to keep only what's in df_processed
+        final_features = [f for f in final_features if f in df_processed.columns]
+        
+        # Ensure Close is first
+        if "Close" in final_features and final_features[0] != "Close":
+            final_features.remove("Close")
+            final_features.insert(0, "Close")
+            
+        return final_features
+
+    def fetch_live_data(self, period="2y"):
+        try:
+            ticker = "^NSEI" 
+            # Fetch more data for training stability
+            df = yf.download(ticker, period=period, interval="1d", progress=False)
+            
+            if df.empty:
+                raise ValueError("Failed to fetch data from yfinance")
+
+            # Flatten MultiIndex columns if present (yfinance update)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            df = df.reset_index()
+            
+            if "Date" not in df.columns and df.index.name == "Date":
+                df = df.reset_index()
+                
+            required_raw = ["Date", "Open", "High", "Low", "Close", "Volume"]
+            
+            # Basic validation
+            missing = [c for c in required_raw if c not in df.columns]
+            if missing:
+                raise ValueError(f"Missing columns from live data: {missing}")
+
+            return df[required_raw].copy()
+            
+        except Exception as e:
+            raise CustomException(e, sys)
+
+    def refit_and_update(self, epochs: int = 5):
+        """
+        Fetches latest data, updates the model (fine-tuning), and overwrites the artifact.
+        """
+        try:
+            logging.info("Starting online learning (refit)...")
+            
+            # 1. Fetch Data
+            df = self.fetch_live_data(period="2y") # 2 years gives good context for LSTM
+            
+            # 2. Transform Features
+            df_processed = self.data_transformation.add_technical_indicators(df)
+            lag_cols = ["Close"]
+            lags = [1, 2, 3, 5]
+            df_processed = self.data_transformation.create_lag_features(df_processed, lag_cols, lags)
+            
+            # 3. Prepare X, y
+            final_features = self.get_final_feature_names(df_processed, lag_cols, lags)
+            logging.info(f"Refit features: {final_features}")
+            
+            # Filter rows with NaNs created by lags/indicators
+            df_processed = df_processed.dropna()
+            
+            if len(df_processed) < 60:
+                raise ValueError("Not enough data after processing to refit model.")
+
+            # Scale
+            input_arr = df_processed[final_features].astype(float).values
+            # We use the EXISTING scaler. We do NOT fit_transform, because we want to maintain 
+            # the original scaling logic the model learnt. 
+            # Note: If market shifts drastically outside original bounds, this might clip or skew.
+            # ideally we'd partial_fit, but MinMaxScaler doesn't support partial_fit easily 
+            # without keeping min/max state manually. We'll assume stability or use transform.
+            input_scaled = self.scaler.transform(input_arr)
+            
+            # Create Sequences
+            target_idx = final_features.index("Close")
+            X_train, y_train = self.data_transformation.create_sequences(
+                input_scaled, in_len=60, out_len=1, target_index=target_idx
+            )
+            
+            # 4. Fine-tune Model
+            # Model loaded with compile=False, so we must compile.
+            self.model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+            
+            # Use small learning rate if possible? Keras 'fit' uses existing optimizer state.
+            # We'll just run a few epochs.
+            self.model.fit(X_train, y_train, epochs=epochs, batch_size=32, verbose=0)
+            logging.info("Model fine-tuning complete.")
+            
+            # 5. Save Updated Model
+            self.model.save(self.model_path)
+            logging.info(f"Updated model saved to {self.model_path}")
+            
+        except Exception as e:
+            logging.exception("Error in refit_and_update")
+            raise CustomException(e, sys)
+
+    def predict_next_n_days(self, steps: int = 7, retrain: bool = False):
+        """
+        Fetches live data and predicts the next n days recursively.
+        Optionally retrains the model on latest data before predicting.
+        """
+        try:
+            if retrain:
+                self.refit_and_update(epochs=5)
+            
+            logging.info(f"Starting live prediction for next {steps} days")
+            
+            # 1. Fetch Live Data (Enough for inference window)
+            df = self.fetch_live_data(period="1y") 
+            
+            predictions = []
+            
+            # Current state DataFrame to append predictions to
+            current_df = df.copy()
+            
+            for i in range(steps):
+                # Predict next close
+                pred_price = self.predict(current_df)
+                
+                # Determine next date
+                last_date = pd.to_datetime(current_df['Date'].iloc[-1])
+                next_date = last_date + timedelta(days=1)
+                
+                if next_date.weekday() == 5: # Saturday
+                    next_date += timedelta(days=2) # Skip to Monday
+                elif next_date.weekday() == 6: # Sunday
+                    next_date += timedelta(days=1) # Skip to Monday
+
+                # Create next row
+                # Heuristic: Open/High/Low = Predicted Close. Volume = Last Volume.
+                next_row = {
+                    "Date": next_date,
+                    "Open": pred_price,
+                    "High": pred_price,
+                    "Low": pred_price,
+                    "Close": pred_price,
+                    "Volume": current_df['Volume'].iloc[-1]
+                }
+                
+                # Add to history for next iteration
+                new_row_df = pd.DataFrame([next_row])
+                current_df = pd.concat([current_df, new_row_df], ignore_index=True)
+                
+                predictions.append({
+                    "Date": next_date.strftime("%Y-%m-%d"),
+                    "Price": float(pred_price)
+                })
+                
+            return predictions
 
         except Exception as e:
             raise CustomException(e, sys)

@@ -1,5 +1,5 @@
 
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template
 import pandas as pd
 import sys
 import os
@@ -16,12 +16,79 @@ pipeline = PredictionPipeline()
 
 @app.route('/')
 def home():
-    return render_template_string("""
-    <h1>NIFTY 50 Stock Forecasting API</h1>
-    <p>Use /predict endpoint (POST) with JSON data containing OHLCV history (at least 60 records).</p>
-    <p>Example JSON format: <code>[{"Date": "...", "Open": ..., "High": ..., "Low": ..., "Close": ..., "Volume": ...}, ...]</code></p>
-    """)
+    return render_template('index.html')
 
+@app.route('/predict_dummy', methods=['POST'])
+def predict_dummy():
+    try:
+        # Load dummy data logic
+        dummy_path = "artifacts/test.csv"
+        if not os.path.exists(dummy_path):
+             return jsonify({'error': 'Dummy data not found on server.'}), 404
+        
+        df = pd.read_csv(dummy_path)
+        prediction = pipeline.predict(df)
+        
+        return jsonify({
+            'prediction': float(prediction),
+            'source': 'dummy_data'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/predict_upload', methods=['POST'])
+def predict_upload():
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file uploaded'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
+
+        try:
+            df = pd.read_csv(file)
+        except Exception:
+            return jsonify({'error': 'Invalid CSV file'}), 400
+            
+        # Ensure we have required columns (PredictionPipeline checks this too, but good distinct check)
+        required_cols = ["Open", "High", "Low", "Close", "Volume"]
+        missing = [col for col in required_cols if col not in df.columns]
+        if missing:
+             return jsonify({'error': f'Missing columns: {missing}'}), 400
+             
+        # Make prediction
+        prediction = pipeline.predict(df)
+        
+        return jsonify({
+            'prediction': float(prediction),
+            'source': 'upload'
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/predict_live', methods=['POST'])
+def predict_live():
+    try:
+        # Check if retraining is requested
+        data = request.get_json(silent=True)
+        retrain = False
+        if data and 'retrain' in data:
+            retrain = bool(data['retrain'])
+            
+        # Predict next 7 days using live data (and retrain if requested)
+        predictions = pipeline.predict_next_n_days(steps=7, retrain=retrain)
+        
+        return jsonify({
+            'predictions': predictions,
+            'source': 'live_7_days',
+            'retrained': retrain
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# Keep original API endpoint for compatibility
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
@@ -29,15 +96,7 @@ def predict():
         if not json_data:
             return jsonify({'error': 'No input data provided'}), 400
         
-        # Convert JSON to DataFrame
         df = pd.DataFrame(json_data)
-        
-        # Ensure we have required columns
-        required_cols = ["Open", "High", "Low", "Close", "Volume"]
-        if not all(col in df.columns for col in required_cols):
-             return jsonify({'error': f'Missing columns. Required: {required_cols}'}), 400
-             
-        # Make prediction
         prediction = pipeline.predict(df)
         
         return jsonify({
