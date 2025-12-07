@@ -6,3 +6,7 @@ seaborn
 yfinance
 tensorflow
 streamlit
+
+altair
+pandas
+streamlit
