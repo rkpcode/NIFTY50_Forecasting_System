@@ -121,4 +121,4 @@ Contributions are welcome! If you'd like to improve the model or add new feature
 
 ---
 
-**Developed with ❤️ by [Rahul Kumar Pradhan]**
+**Developed with ❤️ by [Rahul Kumar Pradhan](https://github.com/rkpcode)**
