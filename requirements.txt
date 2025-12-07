@@ -4,3 +4,4 @@ scikit-learn
 yfinance
 tensorflow
 streamlit
+protobuf>=4.25.3
