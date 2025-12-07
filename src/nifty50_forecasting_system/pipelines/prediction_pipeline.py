@@ -253,15 +253,51 @@ class PredictionPipeline:
         """
         Fetches live data and predicts the next n days recursively.
         Optionally retrains the model on latest data before predicting.
+        Falls back to using existing model if live data fetch fails (for cloud deployment).
         """
         try:
             if retrain:
-                self.refit_and_update(epochs=5)
+                logging.info("Retraining requested, attempting to fetch live data...")
+                try:
+                    self.refit_and_update(epochs=5)
+                except Exception as retrain_error:
+                    logging.warning(f"Retraining failed (likely due to yfinance restrictions in cloud): {retrain_error}")
+                    logging.info("Continuing with existing model without retraining...")
             
             logging.info(f"Starting live prediction for next {steps} days")
             
-            # 1. Fetch Live Data (Enough for inference window)
-            df = self.fetch_live_data(period="1y") 
+            # 1. Fetch Live Data (with fallback)
+            try:
+                df = self.fetch_live_data(period="1y")
+                logging.info("Successfully fetched live data")
+            except Exception as fetch_error:
+                logging.warning(f"Failed to fetch live data: {fetch_error}")
+                logging.info("Using demo/cached data as fallback...")
+                
+                # Fallback: Try to load test data from artifacts
+                fallback_paths = [
+                    "artifacts/test.csv",
+                    "artifacts/train.csv",
+                    "artifacts/dummy_train.csv"
+                ]
+                
+                df = None
+                for path in fallback_paths:
+                    if os.path.exists(path):
+                        df = pd.read_csv(path)
+                        logging.info(f"Loaded fallback data from {path}")
+                        # Ensure Date column exists
+                        if 'date' in df.columns:
+                            df['Date'] = df['date']
+                        if 'Date' not in df.columns:
+                            # Create synthetic dates
+                            from datetime import datetime
+                            end_date = datetime.now()
+                            df['Date'] = pd.date_range(end=end_date, periods=len(df), freq='D')
+                        break
+                
+                if df is None:
+                    raise ValueError("Could not fetch live data and no fallback data available. Please ensure you have internet connection or add demo data to artifacts/")
             
             predictions = []
             
