@@ -136,32 +136,59 @@ class PredictionPipeline:
 
     def fetch_live_data(self, period="2y"):
         try:
+            import time
             ticker = "^NSEI" 
-            # Fetch more data for training stability
-            df = yf.download(ticker, period=period, interval="1d", progress=False)
+            
+            # Retry logic for cloud environments
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    logging.info(f"Fetching live data from yfinance (attempt {attempt + 1}/{max_retries})...")
+                    
+                    # Create Ticker object with headers (helps with cloud restrictions)
+                    stock = yf.Ticker(ticker)
+                    df = stock.history(period=period)
+                    
+                    if not df.empty:
+                        break
+                        
+                    logging.warning(f"Attempt {attempt + 1} returned empty data, retrying...")
+                    time.sleep(2)  # Wait before retry
+                    
+                except Exception as fetch_error:
+                    logging.warning(f"Attempt {attempt + 1} failed: {fetch_error}")
+                    if attempt == max_retries - 1:
+                        raise
+                    time.sleep(2)
             
             if df.empty:
-                raise ValueError("Failed to fetch data from yfinance")
+                raise ValueError("Failed to fetch data from yfinance after all retries. Please try again later or check your internet connection.")
 
-            # Flatten MultiIndex columns if present (yfinance update)
+            # Flatten MultiIndex columns if present
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
             df = df.reset_index()
             
-            if "Date" not in df.columns and df.index.name == "Date":
-                df = df.reset_index()
-                
+            # yfinance history returns 'Date' in index, now in column after reset
+            if "Date" not in df.columns:
+                # Check if index was datetime
+                if pd.api.types.is_datetime64_any_dtype(df.index):
+                    df['Date'] = df.index
+                    df = df.reset_index(drop=True)
+                    
             required_raw = ["Date", "Open", "High", "Low", "Close", "Volume"]
             
             # Basic validation
             missing = [c for c in required_raw if c not in df.columns]
             if missing:
-                raise ValueError(f"Missing columns from live data: {missing}")
+                raise ValueError(f"Missing columns from live data: {missing}. Available columns: {list(df.columns)}")
 
+            logging.info(f"Successfully fetched {len(df)} rows of live data")
             return df[required_raw].copy()
             
         except Exception as e:
+            logging.error(f"Failed to fetch live data: {str(e)}")
             raise CustomException(e, sys)
 
     def refit_and_update(self, epochs: int = 5):
