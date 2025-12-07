@@ -2,5 +2,6 @@ numpy
 pandas
 scikit-learn
 yfinance
-tensorflow==2.15.0
+tensorflow==2.16.1
+protobuf==5.26.1
 streamlit
