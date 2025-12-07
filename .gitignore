@@ -96,7 +96,7 @@ target/
 .idea/
 
 # Project Specific
-artifacts/
+
 logs/
 build/
 dist/
