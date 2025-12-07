@@ -1,3 +1,15 @@
+---
+title: NIFTY 50 Forecasting System
+emoji: 📈
+colorFrom: blue
+colorTo: green
+sdk: streamlit
+sdk_version: 1.28.0
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # 📈 NIFTY 50 Forecasting System
 
 ![Banner](assets/banner.png)
@@ -27,7 +39,7 @@ This system provides a user-friendly **Streamlit** interface, allowing traders a
 
 ---
 
-## � Model Performance
+## 🛠 Model Performance
 
 We have evaluated multiple architectures to ensure the best performance. The **Seq2Seq LSTM** is the currently recommended model due to its superior stability in multi-step forecasting.
 
