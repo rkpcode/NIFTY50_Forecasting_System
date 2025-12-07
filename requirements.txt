@@ -1,12 +1,6 @@
 numpy
 pandas
 scikit-learn
-matplotlib
-seaborn
 yfinance
 tensorflow
-streamlit
-
-altair
-pandas
 streamlit
